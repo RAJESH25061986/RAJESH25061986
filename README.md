@@ -1,82 +1,87 @@
-# Nifty Supertrend & RSI Trading Bot
+# Intelligent Iron Condor Trading Bot
 
-This project is an automated trading bot that implements a trend-following strategy on the Nifty index futures. It uses the Angel One API to fetch market data and execute trades.
+This project is an automated trading bot that implements a sophisticated Iron Condor options strategy on Nifty. It uses the Angel One API to fetch market data and execute trades.
 
-## Strategy
-The bot uses the following strategy on a 5-minute timeframe:
-- **Buy Signal:**
-  1. The candle is Green.
-  2. The Supertrend indicator (10, 2) is Green (buy signal).
-  3. The RSI indicator (14) is above 50.
-- **Sell Signal:**
-  1. The candle is Red.
-  2. The Supertrend indicator (10, 2) is Red (sell signal).
-  3. The RSI indicator (14) is below 50.
-- **Trade Management:**
-  - **Stop-Loss:** The low (for buy) or high (for sell) of the candle immediately preceding the signal candle.
-  - **Target:** A 1:2 Risk-to-Reward ratio.
-  - The bot automatically monitors the live price and exits the trade if the stop-loss or target is hit.
+## Strategy Overview
+The bot is designed to trade a daily Iron Condor with the following logic:
+
+1.  **Strike Selection:**
+    *   At the start of each day, the bot calculates the **Daily Pivot Points** (R1, S1) based on the previous day's data.
+    *   It selects a Put option to **SELL** near Support 1 (S1) and a Call option to **SELL** near Resistance 1 (R1).
+
+2.  **Hedge Selection:**
+    *   For each sold option, the bot finds a hedging option to **BUY**.
+    *   The hedge is selected by finding an option whose premium is approximately **50% of the sold option's premium**, within a 2% strike price distance.
+
+3.  **Entry Trigger:**
+    *   The bot continuously monitors the two options selected for selling.
+    *   It enters the entire 4-legged Iron Condor trade only when the premium of **BOTH** the sold Put AND the sold Call are **below their respective 15-minute VWAP**.
+
+4.  **Risk Management & Exits:**
+    *   The bot calculates Profit & Loss based on the estimated **total margin blocked** for the trade.
+    *   **Take Profit:** The entire 4-leg position is closed if it hits a **1.5% profit** on the margin.
+    *   **Stop-Loss:** The entire position is closed if it hits a **2.5% loss** on the margin.
 
 ---
 
 ## Project Structure
 - `main.py`: The main entry point to run the bot.
-- `angel_one_client.py`: A client library to handle all interactions with the Angel One API.
-- `strategy.py`: The core module containing the trading logic.
-- `app_config.py`: **(IMPORTANT)** Your configuration file for API keys and settings.
+- `angel_one_client.py`: A client library for all Angel One API interactions.
+- `strategy.py`: The core module for pivot calculations, option selection, and VWAP checks.
+- `app_config.py`: **(IMPORTANT)** Your configuration file for API keys and all strategy parameters.
 - `requirements.txt`: A list of the required Python libraries.
-- `README.md`: This setup guide.
 
 ---
 
 ## How to Set Up and Run
 
 ### Step 1: Create the Configuration File
-
-This is the most important step. Create a file named `app_config.py` in the same directory as the other files. Copy the entire code block below and paste it into your `app_config.py` file.
+Create a file named `app_config.py` in the same directory. Copy the entire code block below and paste it into your `app_config.py` file.
 
 ```python
-# Angel One API Credentials
+# --- Angel One API Credentials ---
 API_KEY = "YOUR_API_KEY"
 SECRET_KEY = "YOUR_SECRET_KEY"
 CLIENT_ID = "YOUR_CLIENT_ID"
 PASSWORD = "YOUR_LOGIN_PASSWORD"
-TOTP_SECRET = "YOUR_TOTP_SECRET" # Your Time-based OTP secret key
+TOTP_SECRET = "YOUR_TOTP_SECRET"
 
-# Trading Settings
-TRADING_SYMBOL = "NIFTY"
-TIMEFRAME = "5MINUTE"
+# --- General Trading Settings ---
+TRADING_INSTRUMENT = "NIFTY"
+# IMPORTANT: Set this to the correct weekly expiry date you want to trade
+# Format: DDMMMYYYY, e.g., "26SEP2025"
+OPTION_EXPIRY = "26SEP2025"
 
-# Strategy Parameters
-SUPERTREND_PERIOD = 10
-SUPERTREND_MULTIPLIER = 2
-RSI_PERIOD = 14
-RSI_MIDLINE = 50
+# --- Iron Condor Strategy Parameters ---
+# Timeframe for calculating VWAP
+VWAP_TIMEFRAME = "FIFTEEN_MINUTE"
 
-# Risk Management
-RISK_REWARD_RATIO = 2.0
+# Rules for selecting the hedge leg
+HEDGE_PREMIUM_RATIO = 0.5 # Buy hedge with premium at 50% of sold premium
+HEDGE_STRIKE_DISTANCE_PERCENT = 2.0 # Max 2% strike distance for the hedge
+
+# --- Risk Management and Exit Rules ---
+# Profit and Loss percentages are based on the margin blocked for the trade
+PROFIT_PERCENT_MARGIN = 1.5
+SL_PERCENT_MARGIN = 2.5
+# Estimated margin blocked per lot for a Nifty Iron Condor.
+# This should be a conservative estimate.
+ESTIMATED_MARGIN_PER_LOT = 45000
 LOT_SIZE = 50
 
-# Bot Settings
-# Set to True to log trades without executing them.
-# Set to False to execute real trades.
+# --- Bot Settings ---
 PAPER_TRADING = True
 ```
 
-**IMPORTANT:** You must replace the placeholder values (`"YOUR_API_KEY"`, etc.) with your actual Angel One API credentials.
+**IMPORTANT:** You must replace the placeholder values for your API credentials and set the `OPTION_EXPIRY` to a valid date.
 
 ### Step 2: Install Dependencies
-
-Open your terminal or command prompt in the project directory and run the following command to install the necessary Python libraries:
 ```bash
 pip install -r requirements.txt
 ```
 
 ### Step 3: Run the Bot
-
-Once your configuration is set up and the dependencies are installed, you can run the bot with the following command:
 ```bash
 python main.py
 ```
-
-The bot will start, log in, and begin looking for trading opportunities. It is highly recommended to run it in `PAPER_TRADING = True` mode first to ensure everything is working as expected.
+The bot will start, log in, and begin its daily setup and monitoring routine. It is highly recommended to run it in `PAPER_TRADING = True` mode first.

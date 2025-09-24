@@ -3,7 +3,7 @@ from SmartApi import SmartConnect
 import pandas as pd
 import app_config as config
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -35,11 +35,9 @@ class AngelOneClient:
     def login(self):
         """
         Logs into the Angel One API and generates a session.
-        Stores the session data, feed token, and JWT token.
         """
         log.info("Attempting to log in...")
         try:
-            # Generate a session using the credentials
             data = self.smart_api.generateSession(
                 self.client_id,
                 self.password,
@@ -52,7 +50,6 @@ class AngelOneClient:
                 self.feed_token = self.smart_api.getfeedToken()
 
                 log.info("Login successful!")
-                log.info(f"Welcome, {self.session_data.get('clientName', 'user')}")
                 return True
             else:
                 log.error(f"Login failed. Reason: {data.get('message', 'Unknown error')}")
@@ -62,92 +59,103 @@ class AngelOneClient:
             log.error(f"An exception occurred during login: {e}")
             return False
 
-    def get_instrument_details(self, name='NIFTY'):
+    def get_daily_ohlc(self, symbol_token="26000-NSE"): # Nifty Index token
         """
-        Fetches the instrument list and finds the futures contract with the nearest expiry.
+        Fetches the previous day's OHLC data for pivot calculation.
+        Note: The token for Nifty index is different from futures/options.
+        This may need to be looked up from the instrument list if it changes.
+        """
+        log.info(f"Fetching previous day OHLC for token {symbol_token}")
+        try:
+            # We need to find the actual token for the Nifty index from the instrument list
+            # For simplicity, we assume a known token format here, but a robust implementation
+            # would search the instrument list for the underlying index.
+            # This is a simplification to avoid another full instrument list scan.
 
-        :param name: The name of the instrument (e.g., 'NIFTY').
-        :return: A dictionary with 'symbol', 'token', and 'expiry' if found, else None.
+            # Find the last trading day, skipping weekends.
+            today = datetime.now()
+            # If today is Monday, the last trading day was Friday (3 days ago).
+            # If Sunday, 2 days ago. Otherwise, 1 day ago.
+            days_to_subtract = 1
+            if today.weekday() == 0: # Monday
+                days_to_subtract = 3
+            elif today.weekday() == 6: # Sunday
+                days_to_subtract = 2
+
+            last_trading_day = today - timedelta(days=days_to_subtract)
+
+            # Fetch data for a range to ensure we get the last candle.
+            to_date = last_trading_day.strftime('%Y-%m-%d 23:59')
+            from_date = (last_trading_day - timedelta(days=1)).strftime('%Y-%m-%d 00:00')
+
+            params = {
+                "exchange": "NSE",
+                "symboltoken": "26000", # Nifty Index Token
+                "interval": "ONE_DAY",
+                "fromdate": from_date,
+                "todate": to_date
+            }
+            raw_data = self.smart_api.getCandleData(params)
+
+            if raw_data['status'] and raw_data['data']:
+                # Return the last candle's data
+                last_day = raw_data['data'][-1]
+                return {'high': last_day[2], 'low': last_day[3], 'close': last_day[4]}
+            else:
+                log.error(f"Failed to fetch daily OHLC data: {raw_data.get('message', 'No data')}")
+                return None
+        except Exception as e:
+            log.error(f"An exception occurred while fetching daily OHLC data: {e}")
+            return None
+
+    def get_option_chain(self, name, expiry_date):
         """
-        log.info(f"Fetching instrument list to find nearest expiry for {name} futures...")
+        Fetches the option chain for a given instrument and expiry date.
+        It filters the master instrument list to find all relevant CE and PE options.
+        """
+        log.info(f"Fetching option chain for {name} with expiry {expiry_date}...")
 
         instrument_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
         try:
             response = requests.get(instrument_url, timeout=10)
             response.raise_for_status()
             instrument_list = response.json()
-            log.info(f"Successfully fetched {len(instrument_list)} instruments.")
         except requests.exceptions.RequestException as e:
             log.error(f"Failed to download instrument list: {e}")
             return None
 
-        futures_contracts = []
-        today = datetime.now()
-
+        option_chain = {'calls': [], 'puts': []}
         for instrument in instrument_list:
-            if instrument.get('name') == name and instrument.get('instrumenttype') == 'FUTIDX':
+            if instrument.get('name') == name and instrument.get('instrumenttype') == 'OPTIDX' and instrument.get('expiry') == expiry_date:
                 try:
-                    # Parse the expiry date, format is DDMMMYYYY (e.g., 26SEP2024)
-                    expiry_date = datetime.strptime(instrument['expiry'], '%d%b%Y')
-                    if expiry_date > today:
-                        futures_contracts.append({
-                            'symbol': instrument['symbol'],
-                            'token': instrument['token'],
-                            'expiry': expiry_date
-                        })
+                    strike = float(instrument['strike']) / 100.0
+                    option_type = instrument['opttype']
+
+                    option_details = {
+                        'symbol': instrument['symbol'],
+                        'token': instrument['token'],
+                        'strike': strike
+                    }
+
+                    if option_type == 'CE':
+                        option_chain['calls'].append(option_details)
+                    elif option_type == 'PE':
+                        option_chain['puts'].append(option_details)
                 except (ValueError, KeyError) as e:
-                    log.debug(f"Could not parse instrument, skipping. Reason: {e}")
+                    log.debug(f"Could not parse option instrument, skipping. Reason: {e}")
                     continue
 
-        if not futures_contracts:
-            log.error(f"No active futures contracts found for {name}.")
-            return None
+        log.info(f"Found {len(option_chain['calls'])} Calls and {len(option_chain['puts'])} Puts.")
+        return option_chain
 
-        # Find the contract with the nearest expiry date
-        nearest_contract = min(futures_contracts, key=lambda x: x['expiry'])
-        log.info(f"Found nearest expiry instrument: {nearest_contract}")
-
-        return nearest_contract
-
-    def get_ltp(self, symbol, token, exchange="NFO"):
+    def get_historical_data(self, symbol_token, interval, from_date, to_date):
         """
-        Fetches the Last Traded Price (LTP) for a given instrument.
-
-        :param symbol: The trading symbol of the instrument.
-        :param token: The token of the instrument.
-        :param exchange: The exchange of the instrument (e.g., 'NFO', 'NSE').
-        :return: The LTP as a float, or None if an error occurs.
+        Fetches historical candle data.
         """
-        log.debug(f"Fetching LTP for {symbol} ({token})")
-        try:
-            # The ltpData function seems to work best with these params
-            response = self.smart_api.ltpData(exchange, symbol, token)
-
-            if response.get('status') and response.get('data', {}).get('ltp'):
-                ltp = response['data']['ltp']
-                log.debug(f"LTP for {symbol}: {ltp}")
-                return float(ltp)
-            else:
-                log.error(f"Could not fetch LTP for {symbol}: {response.get('message', 'No data')}")
-                return None
-        except Exception as e:
-            log.error(f"An exception occurred while fetching LTP for {symbol}: {e}")
-            return None
-
-    def get_historical_data(self, symbol_token, from_date, to_date, interval='FIVE_MINUTE'):
-        """
-        Fetches historical candle data for a given symbol token.
-
-        :param symbol_token: The token of the symbol (e.g., "26000" for NIFTY).
-        :param from_date: The start date in 'YYYY-MM-DD HH:MM' format.
-        :param to_date: The end date in 'YYYY-MM-DD HH:MM' format.
-        :param interval: The candle interval (e.g., 'FIVE_MINUTE').
-        :return: A pandas DataFrame with historical data, or None if an error occurs.
-        """
-        log.info(f"Fetching historical data for token {symbol_token} from {from_date} to {to_date}")
+        log.info(f"Fetching historical data for token {symbol_token}...")
         try:
             params = {
-                "exchange": "NFO", # Futures data is on the NFO exchange
+                "exchange": "NFO",
                 "symboltoken": symbol_token,
                 "interval": interval,
                 "fromdate": from_date,
@@ -155,10 +163,9 @@ class AngelOneClient:
             }
             raw_data = self.smart_api.getCandleData(params)
 
-            if raw_data['status'] and raw_data['data'] is not None:
+            if raw_data['status'] and raw_data['data']:
                 df = pd.DataFrame(raw_data['data'], columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
                 df['datetime'] = pd.to_datetime(df['datetime'])
-                log.info(f"Successfully fetched {len(df)} candles.")
                 return df
             else:
                 log.error(f"Failed to fetch historical data: {raw_data.get('message', 'No data')}")
@@ -167,26 +174,34 @@ class AngelOneClient:
             log.error(f"An exception occurred while fetching historical data: {e}")
             return None
 
-    def place_order(self, symbol, token, quantity, transaction_type, order_type='MARKET', product_type='INTRADAY'):
+    def get_ltp(self, symbol, token, exchange="NFO"):
         """
-        Places an order.
+        Fetches the Last Traded Price (LTP) for a given instrument.
+        """
+        log.debug(f"Fetching LTP for {symbol} ({token})")
+        try:
+            response = self.smart_api.ltpData(exchange, symbol, token)
+            if response.get('status') and response.get('data', {}).get('ltp'):
+                return float(response['data']['ltp'])
+            else:
+                log.error(f"Could not fetch LTP for {symbol}: {response.get('message', 'No data')}")
+                return None
+        except Exception as e:
+            log.error(f"An exception occurred while fetching LTP for {symbol}: {e}")
+            return None
 
-        :param symbol: The trading symbol (e.g., 'NIFTY').
-        :param token: The symbol token.
-        :param quantity: The number of shares/lots.
-        :param transaction_type: 'BUY' or 'SELL'.
-        :param order_type: 'MARKET' or 'LIMIT'.
-        :param product_type: 'INTRADAY', 'DELIVERY', etc.
-        :return: The order ID if successful, else None.
+    def place_order(self, symbol, token, quantity, transaction_type, order_type='MARKET', product_type='INTRADAY', exchange="NFO"):
+        """
+        Places a single order.
         """
         log.info(f"Placing {transaction_type} order for {quantity} of {symbol}...")
         try:
             params = {
                 "variety": "NORMAL",
-                "tradingsymbol": symbol, # Use the dynamically fetched symbol directly
+                "tradingsymbol": symbol,
                 "symboltoken": token,
                 "transactiontype": transaction_type,
-                "exchange": "NFO", # Futures are also in the NFO segment
+                "exchange": exchange,
                 "ordertype": order_type,
                 "producttype": product_type,
                 "duration": "DAY",
@@ -203,31 +218,3 @@ class AngelOneClient:
         except Exception as e:
             log.error(f"An exception occurred while placing order: {e}")
             return None
-
-    def logout(self):
-        """
-        Logs out from the Angel One session.
-        """
-        log.info("Attempting to log out...")
-        try:
-            if self.session_data:
-                self.smart_api.terminateSession(self.client_id)
-                log.info("Logout successful.")
-            else:
-                log.warning("No active session to log out from.")
-        except Exception as e:
-            log.error(f"An exception occurred during logout: {e}")
-
-# Example usage (for testing purposes)
-if __name__ == '__main__':
-    # This block will only run when the script is executed directly
-    # It allows for testing the client's login functionality
-
-    # IMPORTANT: Fill in your credentials in app_config.py before running this
-    if config.API_KEY == "YOUR_API_KEY":
-        log.error("Please fill in your API credentials in the 'app_config.py' file.")
-    else:
-        client = AngelOneClient()
-        if client.login():
-            # You can add more test calls here in the future
-            client.logout()
