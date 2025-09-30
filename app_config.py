@@ -9,7 +9,7 @@ TOTP_SECRET = "YOUR_TOTP_SECRET"
 TRADING_INSTRUMENT = "NIFTY"
 # IMPORTANT: Set this to the correct weekly expiry date you want to trade
 # Format: DDMMMYYYY, e.g., "26SEP2025"
-OPTION_EXPIRY = "26SEP2025"
+OPTION_EXPIRY = "28OCT2025"
 
 # --- Iron Condor Strategy Parameters ---
 # Timeframe for calculating VWAP
@@ -25,8 +25,8 @@ PROFIT_PERCENT_MARGIN = 1.5
 SL_PERCENT_MARGIN = 2.5
 # Estimated margin blocked per lot for a Nifty Iron Condor.
 # This should be a conservative estimate.
-ESTIMATED_MARGIN_PER_LOT = 45000
-LOT_SIZE = 50
+ESTIMATED_MARGIN_PER_LOT = 75000
+LOT_SIZE = 75
 
 # --- Bot Settings ---
 PAPER_TRADING = True
